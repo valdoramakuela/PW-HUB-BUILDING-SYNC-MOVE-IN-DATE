@@ -1,0 +1,32 @@
+name: Sync Buildings to HubSpot
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs daily at midnight UTC
+  workflow_dispatch:     # Allows manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests hubspot-api-client python-dotenv
+
+      - name: Run sync script
+        env:
+          PW_CLIENT_ID: ${{ secrets.PW_CLIENT_ID }}
+          PW_CLIENT_SECRET: ${{ secrets.PW_CLIENT_SECRET }}
+          PW_SYSTEM_ID: ${{ secrets.PW_SYSTEM_ID }}
+          HUBSPOT_ACCESS_TOKEN: ${{ secrets.HUBSPOT_ACCESS_TOKEN }}
+        run: |
+          python PW-Building-HS.py
