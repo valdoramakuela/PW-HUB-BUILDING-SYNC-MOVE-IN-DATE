@@ -26,7 +26,7 @@ from hubspot.crm.objects.models import (
 # This script is UPDATE-ONLY in HubSpot.
 #
 # - It NEVER creates HubSpot Buildings.
-# - It matches Propertyware building ID against:
+# - It matches Propertyware building idNumber against:
 #
 #       HubSpot geekly_building_id
 #
@@ -37,19 +37,50 @@ from hubspot.crm.objects.models import (
 # - Draft Propertyware leases are used only as source data.
 # - Draft leases are NOT created in HubSpot.
 #
+# ------------------------------------------------------------
+# IMPORTANT FIX:
+#
+# Propertyware exposes two different building identifiers,
+# exactly like it does for leases:
+#
+#     lease["buildingID"]
+#         Propertyware's INTERNAL building object ID
+#         (e.g. 4801003522). This is what a lease record
+#         hands you directly.
+#
+#     building["idNumber"]
+#         The actual building number shown in the
+#         Propertyware UI. THIS is what HubSpot's
+#         geekly_building_id stores.
+#
+# The previous version of this script matched using the
+# internal buildingID pulled straight off the lease, which is
+# why every single Building lookup failed with
+# "BUILDING NOT FOUND" even though the HubSpot index loaded
+# thousands of valid records.
+#
+# This version fetches each candidate building's detail
+# record from Propertyware and resolves its idNumber before
+# doing any HubSpot matching -- mirroring exactly how the
+# lease sync resolves lease["idNumber"] vs lease["id"].
+# ------------------------------------------------------------
+#
 # Logic:
 #
 #   Propertyware Draft Leases
 #          |
-#          | buildingID + moveInDate
+#          | buildingID (internal) + moveInDate
 #          v
-#   Group by Building
+#   Group by internal Building ID
 #          |
 #          v
 #   Earliest future Move In Date
 #          |
 #          v
-#   Existing HubSpot Building
+#   Fetch Building detail -> resolve idNumber
+#          |
+#          v
+#   Existing HubSpot Building (matched on idNumber)
 #          |
 #          v
 #   Update next_move_in_date
@@ -171,7 +202,7 @@ RETRYABLE_STATUS_CODES = {
 
 HUBSPOT_OBJECT_TYPE = "2-11351415"
 
-# Property used to match Propertyware Building ID.
+# Property used to match Propertyware Building idNumber.
 HUBSPOT_MATCH_PROPERTY = "geekly_building_id"
 
 # HubSpot date property we will update.
@@ -256,14 +287,14 @@ def value_to_text(value):
     if value is None:
         return ""
 
-    if isinstance(value, str):
-        return value.strip()
-
     if isinstance(
         value,
         (int, float, bool),
     ):
         return str(value)
+
+    if isinstance(value, str):
+        return value.strip()
 
     if isinstance(value, dict):
         parts = []
@@ -739,7 +770,7 @@ def fetch_draft_leases():
 
 
 # ============================================================
-# GET BUILDING ID FROM LEASE
+# GET BUILDING ID FROM LEASE (internal Propertyware ID)
 # ============================================================
 
 def get_lease_building_id(
@@ -827,7 +858,7 @@ def get_lease_move_in_date(
 
 
 # ============================================================
-# GROUP DRAFT LEASES BY BUILDING
+# GROUP DRAFT LEASES BY BUILDING (internal PW building ID)
 # ============================================================
 
 def build_next_move_in_index(
@@ -964,7 +995,7 @@ def build_next_move_in_index(
 
         logger.info(
             "PW NEXT MOVE-IN | "
-            "building=%s | date=%s | "
+            "building(internal)=%s | date=%s | "
             "lease=%s | lease_id=%s",
             building_id,
             data["date"],
@@ -975,6 +1006,154 @@ def build_next_move_in_index(
         )
 
     return next_move_ins
+
+
+# ============================================================
+# FETCH BUILDING DETAILS (to resolve idNumber)
+# ============================================================
+#
+# THIS IS THE FIX.
+#
+# lease["buildingID"] is Propertyware's INTERNAL building
+# object ID. HubSpot's geekly_building_id stores the
+# building's idNumber (the human-facing building number),
+# NOT this internal ID -- exactly like leases:
+# lease["id"] (internal) vs lease["idNumber"] (matches
+# HubSpot geekly_lease_id).
+#
+# This fetches the full building record and extracts its
+# idNumber, trying several likely field names since we
+# don't have a confirmed schema.
+# ============================================================
+
+def fetch_building_details(
+    internal_building_id
+):
+    endpoint = (
+        f"{base_url}/buildings/"
+        f"{internal_building_id}"
+    )
+
+    return make_api_request(
+        endpoint,
+        label=(
+            f"building-details "
+            f"building={internal_building_id}"
+        ),
+    )
+
+
+def get_building_id_number(
+    building_detail
+):
+    """
+    Resolve the Propertyware building "number" that HubSpot's
+    geekly_building_id actually stores. Tries the most likely
+    field names in order of confidence.
+    """
+
+    if not isinstance(
+        building_detail,
+        dict,
+    ):
+        return ""
+
+    possible_keys = [
+        "idNumber",
+        "buildingNumber",
+        "buildingIdNumber",
+        "propertyIdNumber",
+        "number",
+    ]
+
+    for key in possible_keys:
+
+        value = building_detail.get(
+            key
+        )
+
+        text = value_to_text(
+            value
+        ).strip()
+
+        if text:
+            return text
+
+    return ""
+
+
+def resolve_building_id_numbers(
+    next_move_ins
+):
+    """
+    For each internal building ID found on Draft leases,
+    fetch the building's detail record and resolve its
+    idNumber. Returns a new dict keyed by idNumber (the
+    value that actually matches HubSpot's geekly_building_id),
+    while retaining the internal ID and move-in data for
+    logging/diagnostics.
+    """
+
+    resolved = {}
+
+    unresolved_count = 0
+
+    for (
+        internal_building_id,
+        move_in_data,
+    ) in next_move_ins.items():
+
+        detail = fetch_building_details(
+            internal_building_id
+        )
+
+        id_number = (
+            get_building_id_number(
+                detail
+            )
+        )
+
+        if not id_number:
+
+            unresolved_count += 1
+
+            logger.warning(
+                "PW BUILDING | could not resolve "
+                "idNumber for internal building "
+                "ID=%s | HubSpot update will be "
+                "SKIPPED for this building",
+                internal_building_id,
+            )
+
+            continue
+
+        logger.info(
+            "PW BUILDING | internal ID=%s -> "
+            "idNumber=%s",
+            internal_building_id,
+            id_number,
+        )
+
+        move_in_data = dict(
+            move_in_data
+        )
+
+        move_in_data[
+            "internal_building_id"
+        ] = internal_building_id
+
+        resolved[
+            id_number
+        ] = move_in_data
+
+    logger.info(
+        "PW BUILDING RESOLVE | resolved=%d | "
+        "unresolved=%d",
+        len(resolved),
+        unresolved_count,
+    )
+
+    return resolved
 
 
 # ============================================================
@@ -1366,6 +1545,12 @@ def search_hubspot_building_by_id(
 # ============================================================
 # UPDATE HUBSPOT BUILDING
 # ============================================================
+#
+# NOTE: `building_id` here is now the PW idNumber (the
+# resolved, HubSpot-matching identifier), NOT the internal
+# buildingID from the lease. `next_move_in` still carries
+# `internal_building_id` for logging/traceability.
+# ============================================================
 
 def hubspot_update_building(
     client,
@@ -1376,6 +1561,14 @@ def hubspot_update_building(
     building_id = value_to_text(
         building_id
     ).strip()
+
+    internal_building_id = (
+        value_to_text(
+            (next_move_in or {}).get(
+                "internal_building_id"
+            )
+        ).strip()
+    )
 
     if not building_id:
 
@@ -1410,9 +1603,12 @@ def hubspot_update_building(
 
         logger.warning(
             "HS SKIPPED | BUILDING NOT FOUND | "
-            "PW Building ID=%s | "
+            "PW Building idNumber=%s | "
+            "PW internal buildingID=%s | "
             "NO HUBSPOT BUILDING WILL BE CREATED",
             building_id,
+            internal_building_id
+            or "(unknown)",
         )
 
         return {
@@ -1470,7 +1666,7 @@ def hubspot_update_building(
     else:
 
         logger.info(
-            "HS NO CHANGE | Building=%s | "
+            "HS NO CHANGE | Building idNumber=%s | "
             "no Draft future move-in",
             building_id,
         )
@@ -1512,10 +1708,13 @@ def hubspot_update_building(
         )
 
     logger.info(
-        "HS UPDATE | PW Building=%s | "
+        "HS UPDATE | PW Building idNumber=%s | "
+        "PW internal buildingID=%s | "
         "HS Building=%s | next_move_in=%s | "
         "source_lease=%s",
         building_id,
+        internal_building_id
+        or "(unknown)",
         hubspot_id,
         (
             next_move_in["date"]
@@ -1560,7 +1759,7 @@ def hubspot_update_building(
     if result is not None:
 
         logger.info(
-            "HS UPDATED | Building=%s | "
+            "HS UPDATED | Building idNumber=%s | "
             "HS ID=%s | next_move_in=%s",
             building_id,
             hubspot_id,
@@ -1587,7 +1786,7 @@ def hubspot_update_building(
         }
 
     logger.error(
-        "HS FAILED | Building=%s | "
+        "HS FAILED | Building idNumber=%s | "
         "HS ID=%s",
         building_id,
         hubspot_id,
@@ -1634,6 +1833,11 @@ def save_json(
                 data["lease_number"],
             "leaseName":
                 data["lease_name"],
+            "internalBuildingId":
+                data.get(
+                    "internal_building_id",
+                    "",
+                ),
         }
 
     with open(
@@ -1712,7 +1916,7 @@ def push_to_hubspot(
 
         logger.info(
             "HS PUSH | %d/%d | "
-            "PW Building ID=%s",
+            "PW Building idNumber=%s",
             index,
             len(next_move_ins),
             building_id,
@@ -1874,7 +2078,9 @@ def main():
     )
 
     logger.info(
-        "HubSpot matching property: %s",
+        "HubSpot matching property: %s "
+        "(matched against PW Building idNumber, "
+        "NOT the internal buildingID)",
         HUBSPOT_MATCH_PROPERTY,
     )
 
@@ -1967,19 +2173,43 @@ def main():
         return
 
     # ========================================================
-    # BUILD NEXT MOVE-IN INDEX
+    # BUILD NEXT MOVE-IN INDEX (keyed by internal building ID)
     # ========================================================
 
-    next_move_ins = (
+    next_move_ins_internal = (
         build_next_move_in_index(
             draft_leases
         )
     )
 
-    if not next_move_ins:
+    if not next_move_ins_internal:
 
         logger.info(
             "No future Draft move-in dates found."
+        )
+
+        return
+
+    # ========================================================
+    # RESOLVE idNumber FOR EACH BUILDING
+    # (this is the fix -- HubSpot matches on idNumber, not
+    # the internal buildingID)
+    # ========================================================
+
+    next_move_ins = (
+        resolve_building_id_numbers(
+            next_move_ins_internal
+        )
+    )
+
+    if not next_move_ins:
+
+        logger.warning(
+            "No building idNumbers could be resolved -- "
+            "nothing to push to HubSpot. Check the "
+            "get_building_id_number() field-name list "
+            "against your Propertyware /buildings/{id} "
+            "response shape."
         )
 
         return
