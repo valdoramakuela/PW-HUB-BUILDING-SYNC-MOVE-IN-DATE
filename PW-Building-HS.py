@@ -1,59 +1,146 @@
-
 import os
 import json
 import requests
 from dotenv import load_dotenv
+from requests.auth import HTTPBasicAuth
 
 load_dotenv()
 
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 BASE_URL = "https://api.propertyware.com/pw/api/rest/v1"
-PORTFOLIO_ID = "2794422276"
-ENDPOINT = f"{BASE_URL}/portfolios/{PORTFOLIO_ID}"
 
-client_id = os.getenv("PW_CLIENT_ID")
-client_secret = os.getenv("PW_CLIENT_SECRET")
-system_id = os.getenv("PW_SYSTEM_ID")
+CLIENT_ID = os.getenv("PW_CLIENT_ID")
+CLIENT_SECRET = os.getenv("PW_CLIENT_SECRET")
+SYSTEM_ID = os.getenv("PW_SYSTEM_ID")
 
-if not all([client_id, client_secret, system_id]):
-    raise SystemExit(
-        "Missing PW_CLIENT_ID, PW_CLIENT_SECRET, or PW_SYSTEM_ID."
+PORTFOLIO_ID = 2794422276
+TARGET_ACCOUNT_NUMBER = "3020"
+
+if not all([CLIENT_ID, CLIENT_SECRET, SYSTEM_ID]):
+    raise ValueError(
+        "Missing PW_CLIENT_ID, PW_CLIENT_SECRET, or PW_SYSTEM_ID "
+        "in your environment/.env file."
     )
 
-headers = {
-    "x-propertyware-client-id": client_id,
-    "x-propertyware-client-secret": client_secret,
-    "x-propertyware-system-id": system_id,
-    "Content-Type": "application/json",
+HEADERS = {
+    "x-pw-client-id": CLIENT_ID,
+    "x-pw-system-id": SYSTEM_ID,
     "Accept": "application/json",
 }
 
-print("=" * 65)
-print("PROPERTYWARE SINGLE PORTFOLIO TEST")
-print("Method: GET")
-print(f"Portfolio ID: {PORTFOLIO_ID}")
-print(f"Endpoint: {ENDPOINT}")
-print("Read-only: no records will be modified")
-print("=" * 65)
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+SESSION.auth = HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET)
 
-try:
-    response = requests.get(
-        ENDPOINT,
-        headers=headers,
-        timeout=(30, 60),
+
+def make_api_request(endpoint, params=None):
+    """Make one read-only Propertyware GET request."""
+    url = f"{BASE_URL}{endpoint}"
+
+    print(f"\nGET {url}")
+    if params:
+        print(f"Parameters: {params}")
+
+    response = SESSION.get(
+        url,
+        params=params,
+        timeout=60,
     )
 
-    print(f"\nHTTP Status: {response.status_code}")
-    print(f"Content-Type: {response.headers.get('Content-Type', 'unknown')}")
+    print(f"HTTP Status: {response.status_code}")
+    response.raise_for_status()
 
-    try:
-        data = response.json()
-        print("\nResponse:")
-        print(json.dumps(data, indent=2, ensure_ascii=False))
-    except ValueError:
-        print("\nNon-JSON response:")
-        print(response.text[:8000])
+    if not response.text.strip():
+        return None
 
-except requests.RequestException as exc:
-    print(f"\nRequest failed: {exc}")
+    return response.json()
 
-print("\nTEST COMPLETE")
+
+def extract_records(data):
+    """Handle common Propertyware list-response formats."""
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        for key in ("data", "items", "results", "records", "glAccounts"):
+            if isinstance(data.get(key), list):
+                return data[key]
+
+        # A single account object may be returned directly.
+        if any(
+            key in data
+            for key in ("accountNumber", "account_number", "accountName")
+        ):
+            return [data]
+
+    return []
+
+
+def main():
+    print("=" * 65)
+    print("PROPERTYWARE GL ACCOUNT LOOKUP")
+    print(f"Portfolio ID: {PORTFOLIO_ID}")
+    print(f"Target GL account number: {TARGET_ACCOUNT_NUMBER}")
+    print("Read-only: no records will be modified")
+    print("=" * 65)
+
+    # 1. Confirm the portfolio exists.
+    portfolio = make_api_request(
+        f"/portfolios/{PORTFOLIO_ID}"
+    )
+
+    print("\nPORTFOLIO")
+    print(json.dumps({
+        "id": portfolio.get("id"),
+        "name": portfolio.get("name"),
+        "active": portfolio.get("active"),
+    }, indent=2))
+
+    # 2. Retrieve GL accounts.
+    # If your Propertyware API version uses a different route or
+    # pagination parameters, adjust this endpoint to match its docs.
+    gl_data = make_api_request(
+        "/accounting/glaccounts",
+        params={
+            "limit": 100,
+            "offset": 0,
+        },
+    )
+
+    accounts = extract_records(gl_data)
+
+    print(f"\nGL account records returned: {len(accounts)}")
+
+    # 3. Find account number 3020.
+    matches = []
+
+    for account in accounts:
+        account_number = account.get(
+            "accountNumber",
+            account.get("account_number", account.get("number")),
+        )
+
+        if str(account_number).strip() == TARGET_ACCOUNT_NUMBER:
+            matches.append(account)
+
+    if matches:
+        print("\nMATCHING GL ACCOUNT")
+        print(json.dumps(matches, indent=2))
+    else:
+        print(
+            "\nNo matching account found in the returned records. "
+            "The endpoint may be paginated, use different field names, "
+            "or require a different account-number filter."
+        )
+
+        print("\nSample response structure:")
+        print(json.dumps(gl_data, indent=2)[:12000])
+
+    print("\nTEST COMPLETE")
+
+
+if __name__ == "__main__":
+    main()
