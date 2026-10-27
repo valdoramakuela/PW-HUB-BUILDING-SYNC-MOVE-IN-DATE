@@ -1,8 +1,8 @@
+
 import os
 import json
 import requests
 from dotenv import load_dotenv
-from requests.auth import HTTPBasicAuth
 
 load_dotenv()
 
@@ -12,35 +12,39 @@ load_dotenv()
 
 BASE_URL = "https://api.propertyware.com/pw/api/rest/v1"
 
+PORTFOLIO_ID = "2794422276"
+TARGET_ACCOUNT_NUMBER = "3020"
+
 CLIENT_ID = os.getenv("PW_CLIENT_ID")
 CLIENT_SECRET = os.getenv("PW_CLIENT_SECRET")
 SYSTEM_ID = os.getenv("PW_SYSTEM_ID")
 
-PORTFOLIO_ID = 2794422276
-TARGET_ACCOUNT_NUMBER = "3020"
-
 if not all([CLIENT_ID, CLIENT_SECRET, SYSTEM_ID]):
-    raise ValueError(
-        "Missing PW_CLIENT_ID, PW_CLIENT_SECRET, or PW_SYSTEM_ID "
-        "in your environment/.env file."
+    raise RuntimeError(
+        "Missing environment variables: "
+        "PW_CLIENT_ID, PW_CLIENT_SECRET, or PW_SYSTEM_ID."
     )
 
 HEADERS = {
-    "x-pw-client-id": CLIENT_ID,
-    "x-pw-system-id": SYSTEM_ID,
+    "x-propertyware-system-id": SYSTEM_ID,
+    "x-propertyware-client-id": CLIENT_ID,
+    "x-propertyware-client-secret": CLIENT_SECRET,
     "Accept": "application/json",
 }
 
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
-SESSION.auth = HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET)
+
+
+# ============================================================
+# API REQUEST
+# ============================================================
 
 def make_api_request(endpoint, params=None):
     url = f"{BASE_URL}{endpoint}"
 
-    response = requests.get(
+    response = SESSION.get(
         url,
-        headers=HEADERS,
         params=params,
         timeout=60,
     )
@@ -59,49 +63,100 @@ def make_api_request(endpoint, params=None):
     return response.json()
 
 
+# ============================================================
+# RESPONSE HELPERS
+# ============================================================
+
 def extract_records(data):
-    """Handle common Propertyware list-response formats."""
     if isinstance(data, list):
         return data
 
     if isinstance(data, dict):
-        for key in ("data", "items", "results", "records", "glAccounts"):
-            if isinstance(data.get(key), list):
-                return data[key]
+        possible_keys = (
+            "data",
+            "items",
+            "results",
+            "records",
+            "glAccounts",
+            "accounts",
+        )
 
-        # A single account object may be returned directly.
+        for key in possible_keys:
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+
         if any(
             key in data
-            for key in ("accountNumber", "account_number", "accountName")
+            for key in (
+                "accountNumber",
+                "account_number",
+                "accountName",
+            )
         ):
             return [data]
 
     return []
 
 
+def get_account_number(account):
+    for key in (
+        "accountNumber",
+        "account_number",
+        "accountNo",
+        "number",
+        "glAccountNumber",
+    ):
+        if account.get(key) is not None:
+            return str(account[key]).strip()
+
+    return ""
+
+
+def get_account_name(account):
+    for key in (
+        "accountName",
+        "account_name",
+        "name",
+        "description",
+    ):
+        if account.get(key) is not None:
+            return account[key]
+
+    return ""
+
+
+# ============================================================
+# MAIN TEST
+# ============================================================
+
 def main():
     print("=" * 65)
     print("PROPERTYWARE GL ACCOUNT LOOKUP")
     print(f"Portfolio ID: {PORTFOLIO_ID}")
-    print(f"Target GL account number: {TARGET_ACCOUNT_NUMBER}")
+    print(f"Target GL account: {TARGET_ACCOUNT_NUMBER}")
     print("Read-only: no records will be modified")
     print("=" * 65)
 
-    # 1. Confirm the portfolio exists.
+    # 1. Verify access to the portfolio.
     portfolio = make_api_request(
         f"/portfolios/{PORTFOLIO_ID}"
     )
 
-    print("\nPORTFOLIO")
+    if not isinstance(portfolio, dict):
+        print("Unexpected portfolio response:")
+        print(json.dumps(portfolio, indent=2))
+        return
+
+    print("\nPORTFOLIO DETAILS")
     print(json.dumps({
         "id": portfolio.get("id"),
         "name": portfolio.get("name"),
         "active": portfolio.get("active"),
     }, indent=2))
 
-    # 2. Retrieve GL accounts.
-    # If your Propertyware API version uses a different route or
-    # pagination parameters, adjust this endpoint to match its docs.
+    # 2. Retrieve the GL account list.
+    # This route must be supported by your Propertyware API version.
     gl_data = make_api_request(
         "/accounting/glaccounts",
         params={
@@ -112,31 +167,42 @@ def main():
 
     accounts = extract_records(gl_data)
 
-    print(f"\nGL account records returned: {len(accounts)}")
+    print(f"\nGL accounts returned: {len(accounts)}")
 
     # 3. Find account number 3020.
-    matches = []
-
-    for account in accounts:
-        account_number = account.get(
-            "accountNumber",
-            account.get("account_number", account.get("number")),
-        )
-
-        if str(account_number).strip() == TARGET_ACCOUNT_NUMBER:
-            matches.append(account)
+    matches = [
+        account
+        for account in accounts
+        if get_account_number(account) == TARGET_ACCOUNT_NUMBER
+    ]
 
     if matches:
         print("\nMATCHING GL ACCOUNT")
         print(json.dumps(matches, indent=2))
+
+        for account in matches:
+            print("\nSUMMARY")
+            print(f"Account ID: {account.get('id', 'Not provided')}")
+            print(f"Account number: {get_account_number(account)}")
+            print(f"Account name: {get_account_name(account)}")
+
+            print(
+                "\nNote: the GL account response alone does not prove "
+                "that the account is assigned specifically to this "
+                "portfolio."
+            )
     else:
         print(
-            "\nNo matching account found in the returned records. "
-            "The endpoint may be paginated, use different field names, "
-            "or require a different account-number filter."
+            f"\nAccount {TARGET_ACCOUNT_NUMBER} was not found "
+            "in the returned records."
         )
 
-        print("\nSample response structure:")
+        print(
+            "The endpoint may use a different route, response format, "
+            "or pagination scheme."
+        )
+
+        print("\nRESPONSE SAMPLE")
         print(json.dumps(gl_data, indent=2)[:12000])
 
     print("\nTEST COMPLETE")
