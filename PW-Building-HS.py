@@ -15,13 +15,17 @@ headers = {
     "Accept": "application/json",
 }
 
+
 params = {
     "portfolio_id": 2794422276,
-    "post_date_start": "2026-10-20",
-    "post_date_end": "2026-10-27",
+    "post_date_start": "2026-10-26",
+    "post_date_end": "2026-10-26",
+    "lastModifiedDateTimeStart": "2026-10-26T00:00:00",
+    "lastModifiedDateTimeEnd": "2026-10-27T00:00:00",
     "limit": 10,
     "offset": 0,
 }
+
 
 url = f"{BASE_URL}/accounting/generalledger"
 
