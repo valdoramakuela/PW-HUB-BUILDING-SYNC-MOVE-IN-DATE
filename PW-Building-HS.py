@@ -37,21 +37,23 @@ SESSION.auth = HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET)
 
 
 def make_api_request(endpoint, params=None):
-    """Make one read-only Propertyware GET request."""
     url = f"{BASE_URL}{endpoint}"
 
-    print(f"\nGET {url}")
-    if params:
-        print(f"Parameters: {params}")
-
-    response = SESSION.get(
+    response = requests.get(
         url,
+        headers=HEADERS,
+        auth=AUTH,  # Reuse the authentication from your working script
         params=params,
         timeout=60,
     )
 
+    print(f"\nGET {response.url}")
     print(f"HTTP Status: {response.status_code}")
-    response.raise_for_status()
+
+    if not response.ok:
+        print("Propertyware error response:")
+        print(response.text[:5000])
+        response.raise_for_status()
 
     if not response.text.strip():
         return None
