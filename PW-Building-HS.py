@@ -2,28 +2,27 @@
 import os
 import json
 import requests
+from datetime import date
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
 BASE_URL = "https://api.propertyware.com/pw/api/rest/v1"
 
-PORTFOLIO_ID = "2794422276"
-TARGET_ACCOUNT_NUMBER = "3020"
+PORTFOLIO_ID = 2794422276
+GL_ACCOUNT_ID = 1822294093
+GL_ACCOUNT_NUMBER = "3020"
+
+# Current month: October 2026
+START_DATE = date(2026, 10, 1)
+END_DATE = date(2026, 10, 31)
 
 CLIENT_ID = os.getenv("PW_CLIENT_ID")
 CLIENT_SECRET = os.getenv("PW_CLIENT_SECRET")
 SYSTEM_ID = os.getenv("PW_SYSTEM_ID")
 
 if not all([CLIENT_ID, CLIENT_SECRET, SYSTEM_ID]):
-    raise RuntimeError(
-        "Missing environment variables: "
-        "PW_CLIENT_ID, PW_CLIENT_SECRET, or PW_SYSTEM_ID."
-    )
+    raise RuntimeError("Missing Propertyware environment variables.")
 
 HEADERS = {
     "x-propertyware-system-id": SYSTEM_ID,
@@ -36,11 +35,7 @@ SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
 
-# ============================================================
-# API REQUEST
-# ============================================================
-
-def make_api_request(endpoint, params=None):
+def api_get(endpoint, params=None):
     url = f"{BASE_URL}{endpoint}"
 
     response = SESSION.get(
@@ -53,9 +48,8 @@ def make_api_request(endpoint, params=None):
     print(f"HTTP Status: {response.status_code}")
 
     if not response.ok:
-        print("Propertyware error response:")
         print(response.text[:5000])
-        response.raise_for_status()
+        return None
 
     if not response.text.strip():
         return None
@@ -63,149 +57,107 @@ def make_api_request(endpoint, params=None):
     return response.json()
 
 
-# ============================================================
-# RESPONSE HELPERS
-# ============================================================
-
-def extract_records(data):
+def records_from(data):
     if isinstance(data, list):
         return data
 
     if isinstance(data, dict):
-        possible_keys = (
-            "data",
-            "items",
-            "results",
-            "records",
-            "glAccounts",
-            "accounts",
-        )
-
-        for key in possible_keys:
-            value = data.get(key)
-            if isinstance(value, list):
-                return value
-
-        if any(
-            key in data
-            for key in (
-                "accountNumber",
-                "account_number",
-                "accountName",
-            )
+        for key in (
+            "data", "items", "results", "records",
+            "transactions", "ownerContributions",
         ):
-            return [data]
+            if isinstance(data.get(key), list):
+                return data[key]
 
     return []
 
 
-def get_account_number(account):
-    for key in (
-        "accountNumber",
-        "account_number",
-        "accountNo",
-        "number",
-        "glAccountNumber",
-    ):
-        if account.get(key) is not None:
-            return str(account[key]).strip()
+def print_result(title, data):
+    print("\n" + "=" * 65)
+    print(title)
+    print("=" * 65)
 
-    return ""
+    if data is None:
+        print("No successful response.")
+        return
 
+    print(json.dumps(data, indent=2, default=str)[:25000])
 
-def get_account_name(account):
-    for key in (
-        "accountName",
-        "account_name",
-        "name",
-        "description",
-    ):
-        if account.get(key) is not None:
-            return account[key]
-
-    return ""
-
-
-# ============================================================
-# MAIN TEST
-# ============================================================
 
 def main():
     print("=" * 65)
-    print("PROPERTYWARE GL ACCOUNT LOOKUP")
+    print("PROPERTYWARE MONTHLY PAYMENT / BALANCE CHECK")
     print(f"Portfolio ID: {PORTFOLIO_ID}")
-    print(f"Target GL account: {TARGET_ACCOUNT_NUMBER}")
-    print("Read-only: no records will be modified")
+    print(f"GL account: {GL_ACCOUNT_NUMBER} (ID {GL_ACCOUNT_ID})")
+    print(f"Date range: {START_DATE} to {END_DATE}")
+    print("READ-ONLY")
     print("=" * 65)
 
-    # 1. Verify access to the portfolio.
-    portfolio = make_api_request(
-        f"/portfolios/{PORTFOLIO_ID}"
-    )
+    # 1. Portfolio details. portfolioBalance may be null.
+    portfolio = api_get(f"/portfolios/{PORTFOLIO_ID}")
+    print_result("PORTFOLIO DETAILS / BALANCE FIELD", portfolio)
 
-    if not isinstance(portfolio, dict):
-        print("Unexpected portfolio response:")
-        print(json.dumps(portfolio, indent=2))
-        return
-
-    print("\nPORTFOLIO DETAILS")
-    print(json.dumps({
-        "id": portfolio.get("id"),
-        "name": portfolio.get("name"),
-        "active": portfolio.get("active"),
-    }, indent=2))
-
-    # 2. Retrieve the GL account list.
-    # This route must be supported by your Propertyware API version.
-    gl_data = make_api_request(
-        "/accounting/glaccounts",
+    # 2. General ledger transactions posted during October.
+    # The endpoint requires a date filter.
+    ledger = api_get(
+        "/accounting/generalledger",
         params={
+            "portfolio_id": PORTFOLIO_ID,
+            "post_date_start": START_DATE.isoformat(),
+            "post_date_end": END_DATE.isoformat(),
             "limit": 100,
             "offset": 0,
         },
     )
+    print_result("OCTOBER GENERAL LEDGER TRANSACTIONS", ledger)
 
-    accounts = extract_records(gl_data)
+    # Show transaction records with account 3020 if the response
+    # contains identifiable account fields.
+    ledger_records = records_from(ledger)
+    matching = []
 
-    print(f"\nGL accounts returned: {len(accounts)}")
+    for item in ledger_records:
+        serialized = json.dumps(item, default=str).lower()
 
-    # 3. Find account number 3020.
-    matches = [
-        account
-        for account in accounts
-        if get_account_number(account) == TARGET_ACCOUNT_NUMBER
-    ]
+        if (
+            GL_ACCOUNT_NUMBER in serialized
+            or str(GL_ACCOUNT_ID) in serialized
+        ):
+            matching.append(item)
 
-    if matches:
-        print("\nMATCHING GL ACCOUNT")
-        print(json.dumps(matches, indent=2))
+    print_result("POSSIBLE OWNER CONTRIBUTION MATCHES", matching)
 
-        for account in matches:
-            print("\nSUMMARY")
-            print(f"Account ID: {account.get('id', 'Not provided')}")
-            print(f"Account number: {get_account_number(account)}")
-            print(f"Account name: {get_account_name(account)}")
+    # 3. Owner contributions for this portfolio and date range.
+    contributions = api_get(
+        "/accounting/ownercontributions",
+        params={
+            "portfolio_id": PORTFOLIO_ID,
+            "post_date_start": START_DATE.isoformat(),
+            "post_date_end": END_DATE.isoformat(),
+            "limit": 100,
+            "offset": 0,
+        },
+    )
+    print_result("OCTOBER OWNER CONTRIBUTIONS", contributions)
 
-            print(
-                "\nNote: the GL account response alone does not prove "
-                "that the account is assigned specifically to this "
-                "portfolio."
-            )
-    else:
-        print(
-            f"\nAccount {TARGET_ACCOUNT_NUMBER} was not found "
-            "in the returned records."
-        )
-
-        print(
-            "The endpoint may use a different route, response format, "
-            "or pagination scheme."
-        )
-
-        print("\nRESPONSE SAMPLE")
-        print(json.dumps(gl_data, indent=2)[:12000])
+    # 4. Owner draws are separate from owner contributions.
+    draws = api_get(
+        "/accounting/ownerdraws",
+        params={
+            "portfolio_id": PORTFOLIO_ID,
+            "post_date_start": START_DATE.isoformat(),
+            "post_date_end": END_DATE.isoformat(),
+            "limit": 100,
+            "offset": 0,
+        },
+    )
+    print_result("OCTOBER OWNER DRAWS", draws)
 
     print("\nTEST COMPLETE")
+    print(
+        "Review transaction types and statuses before treating records "
+        "as payments. Do not assume a null portfolioBalance is zero."
+    )
 
 
 if __name__ == "__main__":
