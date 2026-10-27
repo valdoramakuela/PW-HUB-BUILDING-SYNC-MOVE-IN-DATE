@@ -4,6 +4,8 @@ import json
 import requests
 from datetime import date, timedelta
 from dotenv import load_dotenv
+import time
+
 
 load_dotenv()
 
@@ -39,11 +41,25 @@ session.headers.update(HEADERS)
 def request_json(path, params=None):
     url = f"{BASE_URL}{path}"
 
-    try:
-        response = session.get(
-            url,
-            params=params,
-            timeout=30,
+    start_time = time.time()
+
+try:
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        params=params,
+        timeout=120
+    )
+
+    print(f"HTTP Status: {response.status_code}")
+    print(f"Elapsed: {time.time() - start_time:.1f} seconds")
+    print(response.text[:5000])
+
+except requests.exceptions.Timeout:
+    print(f"Request timed out after {time.time() - start_time:.1f} seconds")
+
+except requests.exceptions.RequestException as e:
+    print(f"Request failed: {e}")
         )
     except requests.RequestException as exc:
         print(f"\nREQUEST FAILED: {exc}")
