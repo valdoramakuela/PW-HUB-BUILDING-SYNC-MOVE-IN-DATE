@@ -147,72 +147,47 @@ def get_portfolio():
 
 def test_general_ledger():
     print("\n" + "=" * 70)
-    print("GENERAL LEDGER DIAGNOSTIC")
+    print("GENERAL LEDGER — UTC DATE-TIME TEST")
     print("=" * 70)
 
-    from datetime import date, timedelta
+    from datetime import datetime, timezone, timedelta
 
-    end_date = date.today()
-    start_date = end_date - timedelta(days=6)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=7)
 
-    date_start = start_date.isoformat()
-    date_end = end_date.isoformat()
+    params = {
+        "lastModifiedDateTimeStart": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "lastModifiedDateTimeEnd": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "portfolio_id": PORTFOLIO_ID,
+        "limit": 10,
+        "offset": 0,
+    }
 
-    tests = [
-        (
-            "Last-modified date filters",
-            {
-                "lastModifiedDateStart": date_start,
-                "lastModifiedDateEnd": date_end,
-                "limit": 10,
-                "offset": 0,
-            },
-        ),
-        (
-            "Created date filters",
-            {
-                "createdDateStart": date_start,
-                "createdDateEnd": date_end,
-                "limit": 10,
-                "offset": 0,
-            },
-        ),
-    ]
+    try:
+        response = session.get(
+            f"{BASE_URL}/accounting/generalledger",
+            params=params,
+            timeout=30,
+        )
 
-    for label, params in tests:
-        print(f"\nTesting: {label}")
+        print("HTTP:", response.status_code)
+        print("URL:", response.url)
+        print("Response:", response.text[:5000])
 
-        try:
-            response = session.get(
-                f"{BASE_URL}/accounting/generalledger",
-                params=params,
-                timeout=30,
-            )
-
-            print("HTTP:", response.status_code)
-            print("URL:", response.url)
-            print("Response:", response.text[:3000])
-
-            if response.ok:
-                try:
-                    payload = response.json()
-                except ValueError:
-                    print("Successful response was not JSON.")
-                    return
-
-                print("\nSUCCESSFUL RESPONSE:")
-                print(json.dumps(payload, indent=2, default=str)[:10000])
-                print("\nBalance-related fields:")
-                find_balance_fields(payload)
+        if response.ok:
+            try:
+                payload = response.json()
+            except ValueError:
+                print("Response was not JSON.")
                 return
 
-        except requests.RequestException as exc:
-            print("Request failed:", exc)
+            print("\nReturned ledger data:")
+            print(json.dumps(payload, indent=2, default=str)[:12000])
+            print("\nBalance-related fields:")
+            find_balance_fields(payload)
 
-    print(
-        "\nNeither documented date-filter pair succeeded. "
-        "No further requests were made."
-    )
+    except requests.RequestException as exc:
+        print("Request failed:", exc)
 
 
 # ============================================================
