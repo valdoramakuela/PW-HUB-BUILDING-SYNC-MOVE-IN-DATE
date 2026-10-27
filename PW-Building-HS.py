@@ -15,27 +15,36 @@ headers = {
     "Accept": "application/json",
 }
 
-
 params = {
     "portfolio_id": 2794422276,
     "post_date_start": "2026-10-26",
     "post_date_end": "2026-10-26",
-    "lastModifiedDateTimeStart": "2026-10-26T00:00:00",
-    "lastModifiedDateTimeEnd": "2026-10-27T00:00:00",
     "limit": 10,
     "offset": 0,
 }
 
-
 url = f"{BASE_URL}/accounting/generalledger"
 
-response = requests.get(
-    url,
-    headers=headers,
-    params=params,
-    timeout=30,
-)
+try:
+    response = requests.get(
+        url,
+        headers=headers,
+        params=params,
+        timeout=30,
+    )
 
-print("HTTP:", response.status_code)
-print("URL:", response.url)
-print(json.dumps(response.json(), indent=2, default=str))
+    print("HTTP:", response.status_code)
+    print("URL:", response.url)
+    print("Content-Type:", response.headers.get("Content-Type"))
+    print("RAW RESPONSE:")
+    print(response.text[:5000])
+
+    try:
+        data = response.json()
+        print("\nPARSED RESPONSE:")
+        print(json.dumps(data, indent=2, default=str))
+    except ValueError:
+        print("\nResponse is not JSON; raw response shown above.")
+
+except requests.RequestException as exc:
+    print("Request failed:", str(exc))
