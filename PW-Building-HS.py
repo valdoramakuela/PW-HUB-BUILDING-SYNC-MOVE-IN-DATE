@@ -35,14 +35,12 @@ SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 SESSION.auth = HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET)
 
-
 def make_api_request(endpoint, params=None):
     url = f"{BASE_URL}{endpoint}"
 
     response = requests.get(
         url,
         headers=HEADERS,
-        auth=AUTH,  # Reuse the authentication from your working script
         params=params,
         timeout=60,
     )
