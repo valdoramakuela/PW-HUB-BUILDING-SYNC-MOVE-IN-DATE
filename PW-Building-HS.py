@@ -147,38 +147,72 @@ def get_portfolio():
 
 def test_general_ledger():
     print("\n" + "=" * 70)
-    print("2. GENERAL LEDGER DIAGNOSTIC")
+    print("GENERAL LEDGER DIAGNOSTIC")
     print("=" * 70)
 
-    print(f"Date range: {START_DATE} through {END_DATE}")
-    print("Testing last-modified filters without post-date filters.")
+    from datetime import date, timedelta
 
-    params = {
-        "lastModifiedDateTimeStart":
-            f"{START_DATE.isoformat()}T00:00:00",
-        "lastModifiedDateTimeEnd":
-            f"{END_DATE.isoformat()}T23:59:59",
-        "limit": 10,
-        "offset": 0,
-    }
+    end_date = date.today()
+    start_date = end_date - timedelta(days=6)
 
-    payload = request_json(
-        "/accounting/generalledger",
-        params=params,
+    date_start = start_date.isoformat()
+    date_end = end_date.isoformat()
+
+    tests = [
+        (
+            "Last-modified date filters",
+            {
+                "lastModifiedDateStart": date_start,
+                "lastModifiedDateEnd": date_end,
+                "limit": 10,
+                "offset": 0,
+            },
+        ),
+        (
+            "Created date filters",
+            {
+                "createdDateStart": date_start,
+                "createdDateEnd": date_end,
+                "limit": 10,
+                "offset": 0,
+            },
+        ),
+    ]
+
+    for label, params in tests:
+        print(f"\nTesting: {label}")
+
+        try:
+            response = session.get(
+                f"{BASE_URL}/accounting/generalledger",
+                params=params,
+                timeout=30,
+            )
+
+            print("HTTP:", response.status_code)
+            print("URL:", response.url)
+            print("Response:", response.text[:3000])
+
+            if response.ok:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    print("Successful response was not JSON.")
+                    return
+
+                print("\nSUCCESSFUL RESPONSE:")
+                print(json.dumps(payload, indent=2, default=str)[:10000])
+                print("\nBalance-related fields:")
+                find_balance_fields(payload)
+                return
+
+        except requests.RequestException as exc:
+            print("Request failed:", exc)
+
+    print(
+        "\nNeither documented date-filter pair succeeded. "
+        "No further requests were made."
     )
-
-    if payload is None:
-        print(
-            "\nGeneral-ledger test failed. No further ledger "
-            "requests will be made."
-        )
-        return
-
-    print("\nGeneral-ledger response:")
-    print_payload_summary(payload)
-
-    print("\nBalance-related fields in ledger response:")
-    find_balance_fields(payload)
 
 
 # ============================================================
