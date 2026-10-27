@@ -1,8 +1,7 @@
 
 import os
-import json
 import requests
-from datetime import date
+from datetime import date, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,11 +10,7 @@ BASE_URL = "https://api.propertyware.com/pw/api/rest/v1"
 
 PORTFOLIO_ID = 2794422276
 GL_ACCOUNT_ID = 1822294093
-GL_ACCOUNT_NUMBER = "3020"
-
-# Current month: October 2026
-START_DATE = date(2026, 10, 1)
-END_DATE = date(2026, 10, 31)
+YEAR = 2026
 
 CLIENT_ID = os.getenv("PW_CLIENT_ID")
 CLIENT_SECRET = os.getenv("PW_CLIENT_SECRET")
@@ -36,19 +31,17 @@ SESSION.headers.update(HEADERS)
 
 
 def api_get(endpoint, params=None):
-    url = f"{BASE_URL}{endpoint}"
-
     response = SESSION.get(
-        url,
+        f"{BASE_URL}{endpoint}",
         params=params,
         timeout=60,
     )
 
-    print(f"\nGET {response.url}")
-    print(f"HTTP Status: {response.status_code}")
+    print(f"GET {response.url}")
+    print(f"HTTP {response.status_code}")
 
     if not response.ok:
-        print(response.text[:5000])
+        print(response.text[:1500])
         return None
 
     if not response.text.strip():
@@ -72,92 +65,100 @@ def records_from(data):
     return []
 
 
-def print_result(title, data):
-    print("\n" + "=" * 65)
-    print(title)
-    print("=" * 65)
-
-    if data is None:
-        print("No successful response.")
-        return
-
-    print(json.dumps(data, indent=2, default=str)[:25000])
+def money(value):
+    return f"${value:,.2f}"
 
 
 def main():
     print("=" * 65)
-    print("PROPERTYWARE MONTHLY PAYMENT / BALANCE CHECK")
-    print(f"Portfolio ID: {PORTFOLIO_ID}")
-    print(f"GL account: {GL_ACCOUNT_NUMBER} (ID {GL_ACCOUNT_ID})")
-    print(f"Date range: {START_DATE} to {END_DATE}")
-    print("READ-ONLY")
+    print("PROPERTYWARE OWNER CONTRIBUTION REPORT")
+    print(f"Portfolio: {PORTFOLIO_ID}")
+    print(f"GL account: 3020 / ID {GL_ACCOUNT_ID}")
+    print(f"Calendar year: {YEAR}")
     print("=" * 65)
 
-    # 1. Portfolio details. portfolioBalance may be null.
+    # Portfolio summary
     portfolio = api_get(f"/portfolios/{PORTFOLIO_ID}")
-    print_result("PORTFOLIO DETAILS / BALANCE FIELD", portfolio)
 
-    # 2. General ledger transactions posted during October.
-    # The endpoint requires a date filter.
-    ledger = api_get(
-        "/accounting/generalledger",
-        params={
-            "portfolio_id": PORTFOLIO_ID,
-            "post_date_start": START_DATE.isoformat(),
-            "post_date_end": END_DATE.isoformat(),
-            "limit": 100,
-            "offset": 0,
-        },
+    if isinstance(portfolio, dict):
+        print("\nPORTFOLIO SUMMARY")
+        print(f"Name: {portfolio.get('name')}")
+        print(f"Balance field: {portfolio.get('portfolioBalance')}")
+
+    # Use separate windows no longer than 30 days.
+    start = date(YEAR, 1, 1)
+    year_end = date(YEAR, 12, 31)
+    transactions = {}
+
+    while start <= year_end:
+        end = min(start + timedelta(days=29), year_end)
+
+        print(f"\nChecking {start} through {end}")
+
+        data = api_get(
+            "/accounting/ownercontributions",
+            params={
+                "portfolio_id": PORTFOLIO_ID,
+                "post_date_start": start.isoformat(),
+                "post_date_end": end.isoformat(),
+                "limit": 100,
+                "offset": 0,
+            },
+        )
+
+        if data is not None:
+            for item in records_from(data):
+                if item.get("portfolioID") != PORTFOLIO_ID:
+                    continue
+
+                if item.get("glAccountID") != GL_ACCOUNT_ID:
+                    continue
+
+                transaction_id = item.get("id")
+                if transaction_id is not None:
+                    transactions[transaction_id] = item
+
+        start = end + timedelta(days=1)
+
+    # Print only this portfolio's matching transactions.
+    print("\n" + "=" * 65)
+    print(f"OWNER CONTRIBUTIONS FOR {YEAR}")
+    print("=" * 65)
+
+    ordered = sorted(
+        transactions.values(),
+        key=lambda item: (item.get("date") or "", item.get("id") or 0),
+        reverse=True,
     )
-    print_result("OCTOBER GENERAL LEDGER TRANSACTIONS", ledger)
 
-    # Show transaction records with account 3020 if the response
-    # contains identifiable account fields.
-    ledger_records = records_from(ledger)
-    matching = []
+    total = 0.0
 
-    for item in ledger_records:
-        serialized = json.dumps(item, default=str).lower()
+    if not ordered:
+        print("No matching transactions returned.")
+    else:
+        for item in ordered:
+            amount = float(item.get("amount") or 0)
+            total += amount
 
-        if (
-            GL_ACCOUNT_NUMBER in serialized
-            or str(GL_ACCOUNT_ID) in serialized
-        ):
-            matching.append(item)
+            print(
+                f"Date: {item.get('date')} | "
+                f"Amount: {money(amount)} | "
+                f"Type: {item.get('paymentType')} | "
+                f"Reference: {item.get('refNo')} | "
+                f"Transaction ID: {item.get('id')}"
+            )
 
-    print_result("POSSIBLE OWNER CONTRIBUTION MATCHES", matching)
+        print(f"\nNet amount field total: {money(total)}")
 
-    # 3. Owner contributions for this portfolio and date range.
-    contributions = api_get(
-        "/accounting/ownercontributions",
-        params={
-            "portfolio_id": PORTFOLIO_ID,
-            "post_date_start": START_DATE.isoformat(),
-            "post_date_end": END_DATE.isoformat(),
-            "limit": 100,
-            "offset": 0,
-        },
-    )
-    print_result("OCTOBER OWNER CONTRIBUTIONS", contributions)
-
-    # 4. Owner draws are separate from owner contributions.
-    draws = api_get(
-        "/accounting/ownerdraws",
-        params={
-            "portfolio_id": PORTFOLIO_ID,
-            "post_date_start": START_DATE.isoformat(),
-            "post_date_end": END_DATE.isoformat(),
-            "limit": 100,
-            "offset": 0,
-        },
-    )
-    print_result("OCTOBER OWNER DRAWS", draws)
-
-    print("\nTEST COMPLETE")
+    print("\nCURRENT BALANCE")
+    print(f"Portfolio balance returned by API: "
+          f"{portfolio.get('portfolioBalance') if isinstance(portfolio, dict) else 'Unavailable'}")
     print(
-        "Review transaction types and statuses before treating records "
-        "as payments. Do not assume a null portfolioBalance is zero."
+        "The current balance is not calculated from these transactions; "
+        "the API's portfolio response returned null for portfolioBalance."
     )
+
+    print("\nREPORT COMPLETE")
 
 
 if __name__ == "__main__":
